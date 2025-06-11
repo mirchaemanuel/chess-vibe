@@ -23,6 +23,23 @@
         </header>
 
         <main>
+            <div class="game-options">
+                <label for="gameMode">Game Mode:</label>
+                <select id="gameMode">
+                    <option value="pvp">Player vs Player</option>
+                    <option value="pvc">Player vs Computer</option>
+                </select>
+                <div id="aiDifficultySetting" style="display: none;">
+                    <label for="aiDifficulty">AI Difficulty:</label>
+                    <select id="aiDifficulty">
+                        <option value="5">Easy (Depth 5)</option>
+                        <option value="10" selected>Medium (Depth 10)</option>
+                        <option value="15">Hard (Depth 15)</option>
+                        <option value="20">Expert (Depth 20)</option>
+                    </select>
+                </div>
+            </div>
+
             <div class="game-board-container">
                 <div class="captured-pieces white-captured">
                     <h3>Pezzi catturati (Nero)</h3>
@@ -42,6 +59,9 @@
             <div class="game-controls">
                 <button id="newGameBtn" class="btn btn-primary">Nuova Partita</button>
                 <button id="undoBtn" class="btn btn-secondary" disabled>Annulla Mossa</button>
+                <button id="resignBtn" class="btn btn-danger">Resign</button>
+                <button id="offerDrawBtn" class="btn btn-warning">Offer Draw</button>
+                <button id="toggleAnalysisBtn" class="btn btn-info">Show Analysis</button>
                 <div class="promotion-modal" id="promotionModal" style="display: none;">
                     <div class="promotion-content">
                         <h3>Scegli il pezzo per la promozione:</h3>
@@ -62,6 +82,12 @@
                 <div id="moveList" class="move-list"></div>
             </div>
         </footer>
+    </div>
+
+    <div id="analysisPanel" style="display: none;">
+        <button id="closeAnalysisBtn" class="close-btn">&times;</button>
+        <h3>Stockfish Analysis</h3>
+        <pre id="analysisOutput"></pre>
     </div>
 
     <script src="chess.js"></script>

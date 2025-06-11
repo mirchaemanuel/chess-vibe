@@ -2,8 +2,9 @@ class ChessGame {
     constructor() {
         this.board = this.initializeBoard();
         this.currentPlayer = 'white';
+        this.playerColor = 'white'; // 'white' or 'black', for PVC mode
         this.selectedSquare = null;
-        this.gameState = 'playing'; // playing, check, checkmate, stalemate
+        this.gameState = 'playing';
         this.moveHistory = [];
         this.capturedPieces = { white: [], black: [] };
         this.hasKingMoved = { white: false, black: false };
@@ -18,9 +19,17 @@ class ChessGame {
             black: { king: '♚', queen: '♛', rook: '♜', bishop: '♝', knight: '♞', pawn: '♟' }
         };
 
+        this.gameMode = 'pvp'; // 'pvp' or 'pvc'
+        this.aiDifficulty = 10; // Stockfish depth
+        this.stockfish = new Worker('stockfish.js');
+        this.isAITurn = false;
+        this.analysisPanelVisible = false;
+        this.currentAnalysis = "";
+
         this.initializeDOM();
         this.renderBoard();
         this.updateGameInfo();
+        this.setupStockfish();
     }
 
     initializeBoard() {
@@ -51,16 +60,31 @@ class ChessGame {
         this.blackCapturedElement = document.getElementById('blackCaptured');
         this.newGameBtn = document.getElementById('newGameBtn');
         this.undoBtn = document.getElementById('undoBtn');
+        this.resignBtn = document.getElementById('resignBtn');
+        this.offerDrawBtn = document.getElementById('offerDrawBtn');
+        this.toggleAnalysisBtn = document.getElementById('toggleAnalysisBtn');
+        this.analysisPanel = document.getElementById('analysisPanel');
+        this.analysisOutput = document.getElementById('analysisOutput');
+        this.closeAnalysisBtn = document.getElementById('closeAnalysisBtn'); // Added
         this.promotionModal = document.getElementById('promotionModal');
+        this.gameModeSelect = document.getElementById('gameMode');
+        this.aiDifficultySelect = document.getElementById('aiDifficulty');
+        this.aiDifficultySetting = document.getElementById('aiDifficultySetting');
 
         this.newGameBtn.addEventListener('click', () => this.newGame());
         this.undoBtn.addEventListener('click', () => this.undoMove());
+        this.resignBtn.addEventListener('click', () => this.resignGame());
+        this.offerDrawBtn.addEventListener('click', () => this.offerDraw());
+        this.toggleAnalysisBtn.addEventListener('click', () => this.toggleAnalysisPanel());
+        if (this.closeAnalysisBtn) { // Add event listener for the new close button
+            this.closeAnalysisBtn.addEventListener('click', () => this.toggleAnalysisPanel(false));
+        }
+        this.gameModeSelect.addEventListener('change', (e) => this.setGameMode(e.target.value));
+        this.aiDifficultySelect.addEventListener('change', (e) => this.setAIDifficulty(parseInt(e.target.value)));
 
         // Promotion modal event listeners
         document.querySelectorAll('.promotion-piece').forEach(button => {
-            button.addEventListener('click', (e) => {
-                this.handlePromotion(e.target.dataset.piece);
-            });
+            button.addEventListener('click', () => this.handlePromotion(button.dataset.piece));
         });
     }
 
@@ -91,6 +115,7 @@ class ChessGame {
     }
 
     handleSquareClick(row, col) {
+        if (this.isAITurn && this.gameMode === 'pvc') return; // Prevent player moves during AI turn
         if (this.gameState !== 'playing' && this.gameState !== 'check') return;
 
         const clickedSquare = { row, col };
@@ -344,153 +369,175 @@ class ChessGame {
     makeMove(from, to) {
         const piece = this.board[from.row][from.col];
         const capturedPiece = this.board[to.row][to.col];
-        const moveData = {
-            from: { ...from },
-            to: { ...to },
-            piece: { ...piece },
-            capturedPiece: capturedPiece ? { ...capturedPiece } : null,
+
+        // Store state for undo
+        const previousState = {
+            board: JSON.parse(JSON.stringify(this.board)),
+            currentPlayer: this.currentPlayer,
+            playerColor: this.playerColor, // Store player color for undo in PVC
+            gameState: this.gameState,
+            capturedPieces: JSON.parse(JSON.stringify(this.capturedPieces)),
+            hasKingMoved: JSON.parse(JSON.stringify(this.hasKingMoved)),
+            hasRookMoved: JSON.parse(JSON.stringify(this.hasRookMoved)),
             enPassantTarget: this.enPassantTarget,
-            castlingRights: {
-                hasKingMoved: { ...this.hasKingMoved },
-                hasRookMoved: {
-                    white: { ...this.hasRookMoved.white },
-                    black: { ...this.hasRookMoved.black }
-                }
-            }
+            moveHistoryLength: this.moveHistory.length // To truncate move history display
         };
+        this.moveHistory.push({ from, to, piece, capturedPiece, previousState });
 
-        // Handle en passant capture
-        if (piece.type === 'pawn' && this.enPassantTarget &&
-            to.row === this.enPassantTarget.row && to.col === this.enPassantTarget.col) {
-            const capturedPawnRow = piece.color === 'white' ? to.row + 1 : to.row - 1;
-            moveData.enPassantCapture = { ...this.board[capturedPawnRow][to.col] };
-            this.capturedPieces[piece.color === 'white' ? 'black' : 'white'].push(this.board[capturedPawnRow][to.col]);
-            this.board[capturedPawnRow][to.col] = null;
-        }
-
-        // Handle regular capture
-        if (capturedPiece) {
-            this.capturedPieces[piece.color === 'white' ? 'black' : 'white'].push(capturedPiece);
-        }
-
-        // Move the piece
+        // Actual move logic
         this.board[to.row][to.col] = piece;
         this.board[from.row][from.col] = null;
 
-        // Handle castling
-        if (piece.type === 'king' && Math.abs(to.col - from.col) === 2) {
-            const isKingside = to.col > from.col;
-            const rookFromCol = isKingside ? 7 : 0;
-            const rookToCol = isKingside ? 5 : 3;
-
-            this.board[to.row][rookToCol] = this.board[to.row][rookFromCol];
-            this.board[to.row][rookFromCol] = null;
-
-            moveData.castling = { isKingside, rookFrom: rookFromCol, rookTo: rookToCol };
-        }
-
-        // Update castling rights
+        // Handle castling - move the rook
         if (piece.type === 'king') {
             this.hasKingMoved[piece.color] = true;
-        } else if (piece.type === 'rook') {
-            if (from.col === 0) this.hasRookMoved[piece.color].queenside = true;
-            if (from.col === 7) this.hasRookMoved[piece.color].kingside = true;
+            // Kingside castling
+            if (to.col - from.col === 2) {
+                this.board[from.row][5] = this.board[from.row][7];
+                this.board[from.row][7] = null;
+                this.hasRookMoved[piece.color].kingside = true;
+            }
+            // Queenside castling
+            if (to.col - from.col === -2) {
+                this.board[from.row][3] = this.board[from.row][0];
+                this.board[from.row][0] = null;
+                this.hasRookMoved[piece.color].queenside = true;
+            }
         }
 
-        // Set en passant target
-        this.enPassantTarget = null;
-        if (piece.type === 'pawn' && Math.abs(to.row - from.row) === 2) {
-            this.enPassantTarget = {
-                row: (from.row + to.row) / 2,
-                col: to.col
-            };
+        // Update rook moved status
+        if (piece.type === 'rook') {
+            if (from.col === 0 && from.row === (piece.color === 'white' ? 7 : 0)) {
+                this.hasRookMoved[piece.color].queenside = true;
+            }
+            if (from.col === 7 && from.row === (piece.color === 'white' ? 7 : 0)) {
+                this.hasRookMoved[piece.color].kingside = true;
+            }
         }
 
         // Handle pawn promotion
         if (piece.type === 'pawn' && (to.row === 0 || to.row === 7)) {
-            this.pendingPromotion = { row: to.row, col: to.col, color: piece.color };
-            this.showPromotionModal();
-            moveData.promotion = true;
+            this.showPromotionModal(to, piece.color);
+            // The actual promotion is handled by handlePromotion
+            // For now, we pause the game flow here until promotion is chosen
+            return; // Important: exit makeMove until promotion is handled
         }
 
-        this.moveHistory.push(moveData);
-        this.switchPlayer();
+        // Handle en passant capture
+        if (piece.type === 'pawn' && this.enPassantTarget && to.row === this.enPassantTarget.row && to.col === this.enPassantTarget.col) {
+            const capturedPawnRow = piece.color === 'white' ? to.row + 1 : to.row - 1;
+            const enPassantCapturedPiece = this.board[capturedPawnRow][to.col];
+            if (enPassantCapturedPiece) {
+                this.capturedPieces[this.currentPlayer].push(enPassantCapturedPiece);
+                this.board[capturedPawnRow][to.col] = null;
+            }
+        }
+
+        // Set new en passant target if a pawn moves two squares
+        if (piece.type === 'pawn' && Math.abs(from.row - to.row) === 2) {
+            this.enPassantTarget = { row: (from.row + to.row) / 2, col: from.col, color: piece.color };
+        } else {
+            this.enPassantTarget = null;
+        }
+
+        if (capturedPiece) {
+            this.capturedPieces[this.currentPlayer].push(capturedPiece);
+        }
+
         this.clearSelection();
         this.renderBoard();
+        this.switchPlayer();
         this.updateGameInfo();
         this.updateMoveHistory();
         this.updateCapturedPieces();
+        this.checkGameEnd();
+
         this.undoBtn.disabled = false;
 
-        // Check for game end conditions
-        this.checkGameEnd();
+        if (this.gameMode === 'pvc' && this.currentPlayer !== this.playerColor && (this.gameState === 'playing' || this.gameState === 'check')) {
+            this.isAITurn = true;
+            this.gameStatusElement.textContent = 'AI is thinking...'; // Indicate AI is thinking
+            this.requestAIMove();
+        }
     }
 
     showPromotionModal() {
         this.promotionModal.style.display = 'flex';
     }
 
-    handlePromotion(pieceType) {
-        if (this.pendingPromotion) {
-            const { row, col, color } = this.pendingPromotion;
-            this.board[row][col] = { type: pieceType, color };
+    handlePromotion(pieceType, isAIMove = false) {
+        const lastMove = this.moveHistory[this.moveHistory.length - 1];
+        if (!lastMove || !this.board[lastMove.to.row][lastMove.to.col] || this.board[lastMove.to.row][lastMove.to.col].type !== 'pawn') {
+            console.error('Promotion error: Last move not a pawn promotion.');
+            if (!isAIMove) this.promotionModal.style.display = 'none';
+            return;
+        }
 
-            // Update the last move data
-            const lastMove = this.moveHistory[this.moveHistory.length - 1];
-            lastMove.promotedTo = pieceType;
+        const pawn = this.board[lastMove.to.row][lastMove.to.col];
+        this.board[lastMove.to.row][lastMove.to.col] = { type: pieceType, color: pawn.color };
 
-            this.pendingPromotion = null;
+        if (!isAIMove) {
             this.promotionModal.style.display = 'none';
+            this.clearSelection();
             this.renderBoard();
+            this.switchPlayer(); // Player was switched before promotion modal for player, switch again for AI
+            this.updateGameInfo();
+            this.updateMoveHistory(); // Update with promoted piece
+            this.updateCapturedPieces();
+            this.checkGameEnd();
+
+            if (this.gameMode === 'pvc' && this.currentPlayer !== this.playerColor && (this.gameState === 'playing' || this.gameState === 'check')) {
+                this.isAITurn = true;
+                this.gameStatusElement.textContent = 'AI is thinking...';
+                this.requestAIMove();
+            }
+        } else {
+            // AI promotion is part of its move, board already rendered, player switched.
+            // Just need to ensure game state is consistent.
+            this.renderBoard(); // Re-render to show promoted piece from AI
+            this.updateGameInfo();
             this.updateMoveHistory();
+            this.checkGameEnd();
         }
     }
 
     undoMove() {
         if (this.moveHistory.length === 0) return;
 
-        const moveData = this.moveHistory.pop();
-        const { from, to, piece, capturedPiece, enPassantCapture, castling } = moveData;
+        const lastMove = this.moveHistory.pop();
+        const { previousState } = lastMove;
 
-        // Restore the piece to its original position
-        this.board[from.row][from.col] = piece;
-        this.board[to.row][to.col] = capturedPiece;
+        this.board = JSON.parse(JSON.stringify(previousState.board));
+        this.currentPlayer = previousState.currentPlayer;
+        this.playerColor = previousState.playerColor;
+        this.gameState = previousState.gameState;
+        this.capturedPieces = JSON.parse(JSON.stringify(previousState.capturedPieces));
+        this.hasKingMoved = JSON.parse(JSON.stringify(previousState.hasKingMoved));
+        this.hasRookMoved = JSON.parse(JSON.stringify(previousState.hasRookMoved));
+        this.enPassantTarget = previousState.enPassantTarget;
 
-        // Handle en passant undo
-        if (enPassantCapture) {
-            const capturedPawnRow = piece.color === 'white' ? to.row + 1 : to.row - 1;
-            this.board[capturedPawnRow][to.col] = enPassantCapture;
-            this.capturedPieces[piece.color === 'white' ? 'black' : 'white'].pop();
+        // If playing against AI and it was AI's turn to be undone,
+        // undo player's previous move as well so player can retry.
+        if (this.gameMode === 'pvc' && this.currentPlayer !== this.playerColor && this.moveHistory.length > 0) {
+            const playerMoveToUndo = this.moveHistory.pop();
+            const { previousState: playerPreviousState } = playerMoveToUndo;
+            this.board = JSON.parse(JSON.stringify(playerPreviousState.board));
+            this.currentPlayer = playerPreviousState.currentPlayer;
+            this.playerColor = playerPreviousState.playerColor;
+            this.gameState = playerPreviousState.gameState;
+            this.capturedPieces = JSON.parse(JSON.stringify(playerPreviousState.capturedPieces));
+            this.hasKingMoved = JSON.parse(JSON.stringify(playerPreviousState.hasKingMoved));
+            this.hasRookMoved = JSON.parse(JSON.stringify(playerPreviousState.hasRookMoved));
+            this.enPassantTarget = playerPreviousState.enPassantTarget;
         }
+        this.isAITurn = false; // Ensure AI turn is reset
 
-        // Handle regular capture undo
-        if (capturedPiece) {
-            this.capturedPieces[piece.color === 'white' ? 'black' : 'white'].pop();
-        }
-
-        // Handle castling undo
-        if (castling) {
-            const { rookFrom, rookTo } = castling;
-            this.board[to.row][rookFrom] = this.board[to.row][rookTo];
-            this.board[to.row][rookTo] = null;
-        }
-
-        // Restore game state
-        this.enPassantTarget = moveData.enPassantTarget;
-        this.hasKingMoved = moveData.castlingRights.hasKingMoved;
-        this.hasRookMoved = moveData.castlingRights.hasRookMoved;
-
-        this.switchPlayer();
-        this.gameState = 'playing';
-        this.clearSelection();
         this.renderBoard();
         this.updateGameInfo();
-        this.updateMoveHistory();
+        this.updateMoveHistory(previousState.moveHistoryLength);
         this.updateCapturedPieces();
-
-        if (this.moveHistory.length === 0) {
-            this.undoBtn.disabled = true;
-        }
+        this.clearSelection();
+        this.undoBtn.disabled = this.moveHistory.length === 0;
     }
 
     switchPlayer() {
@@ -655,13 +702,21 @@ class ChessGame {
         this.currentPlayerElement.textContent = `Turno: ${playerText}`;
 
         let statusText = 'Partita in corso';
-        if (this.gameState === 'check') {
+        if (this.isAITurn && this.gameMode === 'pvc') {
+            statusText = 'AI is thinking...';
+        } else if (this.gameState === 'check') {
             statusText = `${playerText} sotto scacco!`;
         } else if (this.gameState === 'checkmate') {
             const winner = this.currentPlayer === 'white' ? 'Nero' : 'Bianco';
             statusText = `Scacco matto! Vince ${winner}`;
         } else if (this.gameState === 'stalemate') {
             statusText = 'Stallo - Partita patta';
+        } else if (this.gameState === 'resigned_white') {
+            statusText = 'Bianco si è arreso. Vince Nero!';
+        } else if (this.gameState === 'resigned_black') {
+            statusText = 'Nero si è arreso. Vince Bianco!';
+        } else if (this.gameState === 'draw_agreed') {
+            statusText = 'Patta concordata!';
         }
 
         this.gameStatusElement.textContent = statusText;
@@ -739,7 +794,16 @@ class ChessGame {
 
     newGame() {
         this.board = this.initializeBoard();
-        this.currentPlayer = 'white';
+        // Randomize starting player in PVC mode
+        if (this.gameMode === 'pvc') {
+            this.playerColor = Math.random() < 0.5 ? 'white' : 'black';
+            this.currentPlayer = 'white'; // Game always starts with white's turn
+            console.log(`New PVC game. Player is: ${this.playerColor}. Current turn: ${this.currentPlayer}`);
+        } else {
+            this.playerColor = 'white'; // Default for PvP or if player is white
+            this.currentPlayer = 'white';
+        }
+
         this.selectedSquare = null;
         this.gameState = 'playing';
         this.moveHistory = [];
@@ -750,15 +814,353 @@ class ChessGame {
             black: { kingside: false, queenside: false }
         };
         this.enPassantTarget = null;
-        this.pendingPromotion = null;
+        // this.isAITurn = false; // Reset isAITurn status
 
-        this.promotionModal.style.display = 'none';
-        this.undoBtn.disabled = true;
-        this.clearSelection();
         this.renderBoard();
         this.updateGameInfo();
         this.updateMoveHistory();
         this.updateCapturedPieces();
+        this.clearSelection();
+        this.undoBtn.disabled = true;
+        this.resignBtn.disabled = false;
+        this.offerDrawBtn.disabled = false;
+
+        if (this.gameMode === 'pvc' && this.currentPlayer !== this.playerColor) {
+            this.isAITurn = true;
+            this.gameStatusElement.textContent = 'AI is thinking...';
+            this.requestAIMove();
+        } else {
+            this.isAITurn = false;
+        }
+        // Reset Stockfish for the new game
+        this.stockfish.postMessage('ucinewgame');
+        this.stockfish.postMessage('isready');
+        if (this.analysisPanelVisible) {
+            this.currentAnalysis = "New game started.\n";
+            this.analysisOutput.textContent = this.currentAnalysis;
+        }
+
+    }
+
+    resignGame() {
+        if (this.gameState === 'playing' || this.gameState === 'check') {
+            this.gameState = this.currentPlayer === 'white' ? 'resigned_white' : 'resigned_black';
+            this.updateGameInfo();
+            this.disableBoardInteraction();
+            alert(`${this.currentPlayer} has resigned. The opponent wins!`);
+        }
+    }
+
+    offerDraw() {
+        if (this.gameState === 'playing' || this.gameState === 'check') {
+            // In a real application, this would send a draw offer to the opponent.
+            // For PVC, AI might accept/reject. For PvP, other player would respond.
+            // Here, we'll just log it and for PVC, AI will ignore it for now.
+            if (this.gameMode === 'pvc') {
+                alert("You offered a draw. The AI is not programmed to respond to draw offers yet.");
+                // Future: Implement AI logic for draw offers
+            } else {
+                // For PvP, this would require communication with the other player.
+                // Simulate immediate agreement for simplicity in this version.
+                if (confirm("Offer a draw? If the opponent accepts, the game is a draw.")) {
+                    this.gameState = 'draw_agreed';
+                    this.updateGameInfo();
+                    this.disableBoardInteraction();
+                    alert("Draw agreed!");
+                } else {
+                    alert("Draw offer declined or cancelled.");
+                }
+            }
+        }
+    }
+
+    toggleAnalysisPanel(show) {
+        if (show === undefined) {
+            this.analysisPanelVisible = !this.analysisPanelVisible;
+        } else {
+            this.analysisPanelVisible = show;
+        }
+        this.analysisPanel.style.display = this.analysisPanelVisible ? 'block' : 'none';
+        this.toggleAnalysisBtn.textContent = this.analysisPanelVisible ? 'Hide Analysis' : 'Show Analysis';
+        if (this.analysisPanelVisible) {
+            this.currentAnalysis = "Stockfish Analysis Panel Activated.\n";
+            this.analysisOutput.textContent = this.currentAnalysis;
+            // Optionally, start analysis immediately if it's a player's turn
+            if (this.gameMode === 'pvc' && this.currentPlayer === this.playerColor && (this.gameState === 'playing' || this.gameState === 'check')) {
+                this.requestAnalysisForCurrentPosition();
+            }
+        } else {
+            // Stop ongoing analysis if panel is hidden
+            this.stockfish.postMessage('stop');
+        }
+    }
+
+    requestAnalysisForCurrentPosition() {
+        if (!this.analysisPanelVisible || (this.gameState !== 'playing' && this.gameState !== 'check')) return;
+        this.gameStatusElement.textContent = 'Analyzing position...'; // Update status
+        const fen = this.boardToFEN();
+        this.currentAnalysis = `Requesting analysis for FEN: ${fen}\n`;
+        this.analysisOutput.textContent = this.currentAnalysis;
+        this.stockfish.postMessage(`position fen ${fen}`);
+        this.stockfish.postMessage(`go depth ${this.aiDifficulty} multipv 3`); // multipv for more lines
+    }
+
+    disableBoardInteraction() {
+        // This could involve setting a flag or directly disabling event listeners on squares
+        // For simplicity, we rely on the gameState checks in handleSquareClick
+        this.resignBtn.disabled = true;
+        this.offerDrawBtn.disabled = true;
+        this.undoBtn.disabled = true; // Usually disable undo after game ends
+    }
+
+    // Make sure setAIDifficulty is correctly defined
+    setAIDifficulty(difficulty) {
+        this.aiDifficulty = difficulty;
+        if (this.gameMode === 'pvc' && this.isAITurn) {
+            console.log("AI difficulty changed to: ", difficulty);
+            // Optionally, you might want to stop current AI thinking and restart with new depth
+            // this.stockfish.postMessage('stop');
+            // this.requestAIMove(); 
+        }
+    }
+
+    setGameMode(mode) {
+        this.gameMode = mode;
+        console.log(`Game mode changed to: ${mode}`);
+
+        // Show/hide AI difficulty based on game mode
+        if (this.aiDifficultySetting) { // Target the wrapper div
+            this.aiDifficultySetting.style.display = mode === 'pvc' ? 'block' : 'none';
+        }
+
+        // Reset the game for the new mode AFTER updating UI elements
+        this.newGame();
+    }
+
+    setupStockfish() {
+        this.stockfish.onmessage = (event) => {
+            const message = event.data;
+            // console.log('Stockfish:', message); // For debugging
+
+            if (this.analysisPanelVisible) {
+                this.currentAnalysis += message + '\n';
+                this.analysisOutput.textContent = this.currentAnalysis;
+                this.analysisOutput.scrollTop = this.analysisOutput.scrollHeight; // Auto-scroll
+            }
+
+            if (message.startsWith('bestmove')) {
+                // Ensure AI turn flag is appropriately managed before and after this
+                const move = message.split(' ')[1];
+                if (this.isAITurn) { // Double check it is AI's turn to make a move
+                    this.handleAIMove(move);
+                }
+                // Stop analysis after AI makes its move if it was running for the move itself
+                // this.stockfish.postMessage('stop'); 
+            }
+        };
+        this.stockfish.postMessage('uci');
+        this.stockfish.postMessage('isready');
+        this.stockfish.postMessage('ucinewgame');
+    }
+
+    requestAIMove() {
+        if (!this.isAITurn || this.gameState !== 'playing') return;
+
+        const fen = this.boardToFEN();
+        this.stockfish.postMessage(`position fen ${fen}`);
+
+        // Adjust the depth based on game progress or set difficulty
+        const depth = this.aiDifficulty; // You can customize this logic
+        this.stockfish.postMessage(`go depth ${depth}`);
+    }
+
+    handleAIMove(algebraicMove) {
+        if (!this.isAITurn) return; // Should not happen if logic is correct
+
+        console.log(`AI proposes move: ${algebraicMove}`);
+        const fromAlg = algebraicMove.substring(0, 2);
+        const toAlg = algebraicMove.substring(2, 4);
+        const promotionPieceType = algebraicMove.length === 5 ? algebraicMove.substring(4, 5) : null;
+
+        const from = this.algebraicToCoords(fromAlg);
+        const to = this.algebraicToCoords(toAlg);
+
+        if (!from || !to) {
+            console.error('Invalid algebraic move from AI:', algebraicMove);
+            this.isAITurn = false; // Reset AI turn
+            this.updateGameInfo();
+            return;
+        }
+
+        const piece = this.board[from.row][from.col];
+        if (!piece || piece.color === this.playerColor) {
+            console.error('AI tried to move an invalid piece or player\'s piece:', algebraicMove, piece);
+            this.isAITurn = false;
+            this.updateGameInfo();
+            return;
+        }
+
+        // Simulate makeMove without triggering another AI move immediately
+        const capturedPiece = this.board[to.row][to.col];
+        const previousState = { // Simplified state for AI move, undo will handle full restoration
+            board: JSON.parse(JSON.stringify(this.board)),
+            currentPlayer: this.currentPlayer,
+            gameState: this.gameState,
+            capturedPieces: JSON.parse(JSON.stringify(this.capturedPieces)),
+            hasKingMoved: JSON.parse(JSON.stringify(this.hasKingMoved)),
+            hasRookMoved: JSON.parse(JSON.stringify(this.hasRookMoved)),
+            enPassantTarget: this.enPassantTarget,
+            moveHistoryLength: this.moveHistory.length
+        };
+        this.moveHistory.push({ from, to, piece, capturedPiece, previousState, algebraic: algebraicMove });
+
+
+        this.board[to.row][to.col] = piece;
+        this.board[from.row][from.col] = null;
+
+        // Handle castling for AI
+        if (piece.type === 'king') {
+            this.hasKingMoved[piece.color] = true;
+            if (to.col - from.col === 2) { // Kingside
+                this.board[from.row][5] = this.board[from.row][7];
+                this.board[from.row][7] = null;
+                this.hasRookMoved[piece.color].kingside = true;
+            } else if (to.col - from.col === -2) { // Queenside
+                this.board[from.row][3] = this.board[from.row][0];
+                this.board[from.row][0] = null;
+                this.hasRookMoved[piece.color].queenside = true;
+            }
+        }
+        if (piece.type === 'rook') {
+            if (from.col === 0 && from.row === (piece.color === 'white' ? 7 : 0)) this.hasRookMoved[piece.color].queenside = true;
+            if (from.col === 7 && from.row === (piece.color === 'white' ? 7 : 0)) this.hasRookMoved[piece.color].kingside = true;
+        }
+
+
+        // Handle AI pawn promotion
+        if (promotionPieceType) {
+            const promotedPiece = promotionPieceType === 'q' ? 'queen' :
+                promotionPieceType === 'r' ? 'rook' :
+                    promotionPieceType === 'b' ? 'bishop' :
+                        promotionPieceType === 'n' ? 'knight' : 'queen'; // Default to queen
+            this.board[to.row][to.col] = { type: promotedPiece, color: piece.color };
+            // Update move history with promotion info for AI
+            this.moveHistory[this.moveHistory.length - 1].promotion = true;
+            this.moveHistory[this.moveHistory.length - 1].promotedTo = promotedPiece;
+        }
+
+        // Handle en passant capture for AI
+        if (piece.type === 'pawn' && this.enPassantTarget && to.row === this.enPassantTarget.row && to.col === this.enPassantTarget.col) {
+            const capturedPawnRow = piece.color === 'white' ? to.row + 1 : to.row - 1;
+            const enPassantCapturedPiece = this.board[capturedPawnRow][to.col];
+            if (enPassantCapturedPiece) {
+                this.capturedPieces[this.currentPlayer].push(enPassantCapturedPiece); // AI is current player here
+                this.board[capturedPawnRow][to.col] = null;
+            }
+        }
+
+        // Set new en passant target if AI pawn moves two squares
+        if (piece.type === 'pawn' && Math.abs(from.row - to.row) === 2) {
+            this.enPassantTarget = { row: (from.row + to.row) / 2, col: from.col, color: piece.color };
+        } else {
+            this.enPassantTarget = null;
+        }
+
+
+        if (capturedPiece) {
+            this.capturedPieces[this.currentPlayer].push(capturedPiece); // AI is current player here
+        }
+
+        this.isAITurn = false; // AI's turn is over
+        this.switchPlayer(); // Switch back to player
+        this.renderBoard();
+        this.updateGameInfo();
+        this.updateMoveHistory();
+        this.updateCapturedPieces();
+        this.checkGameEnd();
+        this.undoBtn.disabled = false;
+
+        // If analysis panel is visible, request analysis for the new position from player's perspective
+        if (this.analysisPanelVisible && (this.gameState === 'playing' || this.gameState === 'check')) {
+            this.requestAnalysisForCurrentPosition();
+        }
+    }
+
+    algebraicToCoords(alg) {
+        const col = alg.charCodeAt(0) - 97;
+        const row = 8 - parseInt(alg.charAt(1), 10);
+        return this.isInBounds(row, col) ? { row, col } : null;
+    }
+
+    boardToFEN() {
+        let fen = '';
+        for (let r = 0; r < 8; r++) {
+            let emptySquares = 0;
+            for (let c = 0; c < 8; c++) {
+                const piece = this.board[r][c];
+                if (piece) {
+                    if (emptySquares > 0) {
+                        fen += emptySquares;
+                        emptySquares = 0;
+                    }
+                    let fenChar = piece.type.toLowerCase();
+                    if (piece.color === 'white') {
+                        fenChar = fenChar.toUpperCase();
+                    }
+                    // Stockfish.js uses p, n, b, r, q, k
+                    if (fenChar === 'N' && piece.type === 'knight') fenChar = 'N';
+                    else if (fenChar === 'n' && piece.type === 'knight') fenChar = 'n';
+                    else fenChar = piece.type.charAt(0);
+
+                    if (piece.color === 'white') {
+                        fen += fenChar.toUpperCase();
+                    } else {
+                        fen += fenChar.toLowerCase();
+                    }
+
+                } else {
+                    emptySquares++;
+                }
+            }
+            if (emptySquares > 0) {
+                fen += emptySquares;
+            }
+            if (r < 7) {
+                fen += '/';
+            }
+        }
+
+        // Active color
+        fen += this.currentPlayer === 'white' ? ' w' : ' b';
+
+        // Castling availability
+        let castling = '';
+        if (!this.hasKingMoved.white) {
+            if (!this.hasRookMoved.white.kingside) castling += 'K';
+            if (!this.hasRookMoved.white.queenside) castling += 'Q';
+        }
+        if (!this.hasKingMoved.black) {
+            if (!this.hasRookMoved.black.kingside) castling += 'k';
+            if (!this.hasRookMoved.black.queenside) castling += 'q';
+        }
+        fen += castling.length > 0 ? ` ${castling}` : ' -';
+
+        // En passant target square
+        if (this.enPassantTarget) {
+            const col = String.fromCharCode(97 + this.enPassantTarget.col);
+            const row = 8 - this.enPassantTarget.row;
+            fen += ` ${col}${row}`;
+        } else {
+            fen += ' -';
+        }
+
+        // Halfmove clock (simplified, not strictly necessary for basic Stockfish interaction)
+        fen += ' 0';
+
+        // Fullmove number (simplified)
+        fen += ` ${Math.floor(this.moveHistory.length / 2) + 1}`;
+
+        return fen;
     }
 }
 
