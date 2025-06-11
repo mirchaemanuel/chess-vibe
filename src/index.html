@@ -38,6 +38,10 @@
                         <option value="20">Expert (Depth 20)</option>
                     </select>
                 </div>
+                <div id="showAIAssistContainer">
+                    <input type="checkbox" id="showAIAssistArrow">
+                    <label for="showAIAssistArrow">Show AI's contemplated move</label>
+                </div>
             </div>
 
             <div class="game-board-container">
@@ -71,6 +75,14 @@
                             <button class="promotion-piece" data-piece="bishop">♗</button>
                             <button class="promotion-piece" data-piece="knight">♘</button>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Checkmate Modal -->
+                <div id="checkmateModal" class="modal">
+                    <div class="modal-content">
+                        <h3 id="checkmateMessage"></h3>
+                        <button id="closeCheckmateModalBtn">Close</button>
                     </div>
                 </div>
             </div>

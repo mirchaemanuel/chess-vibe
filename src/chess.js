@@ -25,6 +25,8 @@ class ChessGame {
         this.isAITurn = false;
         this.analysisPanelVisible = false;
         this.currentAnalysis = "";
+        this.showAIAssist = false; // Added
+        this.thinkingArrowSVG = null; // Added to store the thinking arrow SVG element
 
         this.initializeDOM();
         this.renderBoard();
@@ -70,6 +72,13 @@ class ChessGame {
         this.gameModeSelect = document.getElementById('gameMode');
         this.aiDifficultySelect = document.getElementById('aiDifficulty');
         this.aiDifficultySetting = document.getElementById('aiDifficultySetting');
+        this.showAIAssistCheckbox = document.getElementById('showAIAssistArrow');
+        this.aiAssistContainer = document.getElementById('showAIAssistContainer');
+
+        // Checkmate Modal elements
+        this.checkmateModal = document.getElementById('checkmateModal');
+        this.checkmateMessageElement = document.getElementById('checkmateMessage');
+        this.closeCheckmateModalBtn = document.getElementById('closeCheckmateModalBtn');
 
         this.newGameBtn.addEventListener('click', () => this.newGame());
         this.undoBtn.addEventListener('click', () => this.undoMove());
@@ -79,8 +88,19 @@ class ChessGame {
         if (this.closeAnalysisBtn) { // Add event listener for the new close button
             this.closeAnalysisBtn.addEventListener('click', () => this.toggleAnalysisPanel(false));
         }
+        if (this.closeCheckmateModalBtn) {
+            this.closeCheckmateModalBtn.addEventListener('click', () => this.hideCheckmateModal());
+        }
         this.gameModeSelect.addEventListener('change', (e) => this.setGameMode(e.target.value));
         this.aiDifficultySelect.addEventListener('change', (e) => this.setAIDifficulty(parseInt(e.target.value)));
+        if (this.showAIAssistCheckbox) { // Added event listener for the new checkbox
+            this.showAIAssistCheckbox.addEventListener('change', (e) => {
+                this.showAIAssist = e.target.checked;
+                if (!this.showAIAssist) {
+                    this.removeThinkingArrow(); // Remove arrow if checkbox is unchecked
+                }
+            });
+        }
 
         // Promotion modal event listeners
         document.querySelectorAll('.promotion-piece').forEach(button => {
@@ -89,7 +109,26 @@ class ChessGame {
     }
 
     renderBoard() {
-        this.boardElement.innerHTML = '';
+        this.boardElement.innerHTML = ''; // Clear previous board
+
+        // Add SVG defs for arrowheads if not already present
+        if (!document.getElementById('arrowhead')) {
+            const svgDefs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svgDefs.style.position = 'absolute';
+            svgDefs.style.width = '0';
+            svgDefs.style.height = '0';
+            svgDefs.innerHTML = `
+                <defs>
+                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="rgba(255, 0, 0, 0.7)" />
+                    </marker>
+                    <marker id="arrowhead-thinking" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="rgba(255, 165, 0, 0.6)" />
+                    </marker>
+                </defs>
+            `;
+            this.boardElement.appendChild(svgDefs);
+        }
 
         for (let row = 0; row < 8; row++) {
             const rowElement = document.createElement('div');
@@ -659,22 +698,37 @@ class ChessGame {
     checkGameEnd() {
         const inCheck = this.isInCheck(this.currentPlayer);
         const hasValidMoves = this.hasValidMoves(this.currentPlayer);
+        let gameEnded = false;
+
+        // Clear previous in-check highlights first
+        document.querySelectorAll('.square.in-check').forEach(sq => sq.classList.remove('in-check'));
 
         if (inCheck) {
             this.gameState = 'check';
             const kingPosition = this.findKing(this.currentPlayer);
             if (kingPosition) {
                 const kingElement = document.querySelector(`[data-row="${kingPosition.row}"][data-col="${kingPosition.col}"]`);
-                kingElement.classList.add('in-check');
+                if (kingElement) kingElement.classList.add('in-check');
             }
 
             if (!hasValidMoves) {
                 this.gameState = 'checkmate';
+                const winner = this.currentPlayer === 'white' ? 'Nero' : 'Bianco';
+                this.showCheckmateModal(`Scacco matto! ${winner} vince!`);
+                gameEnded = true;
             }
         } else if (!hasValidMoves) {
             this.gameState = 'stalemate';
+            this.showCheckmateModal('Stallo! Partita patta.'); // Re-use modal for stalemate
+            gameEnded = true;
         } else {
             this.gameState = 'playing';
+        }
+        this.updateGameInfo(); // Update status text based on new gameState
+        if (gameEnded) {
+            this.disableBoardInteraction();
+            this.resignBtn.disabled = true;
+            this.offerDrawBtn.disabled = true;
         }
     }
 
@@ -702,7 +756,7 @@ class ChessGame {
         this.currentPlayerElement.textContent = `Turno: ${playerText}`;
 
         let statusText = 'Partita in corso';
-        if (this.isAITurn && this.gameMode === 'pvc') {
+        if (this.isAITurn && this.gameMode === 'pvc' && (this.gameState === 'playing' || this.gameState === 'check')) {
             statusText = 'AI is thinking...';
         } else if (this.gameState === 'check') {
             statusText = `${playerText} sotto scacco!`;
@@ -712,11 +766,9 @@ class ChessGame {
         } else if (this.gameState === 'stalemate') {
             statusText = 'Stallo - Partita patta';
         } else if (this.gameState === 'resigned_white') {
-            statusText = 'Bianco si è arreso. Vince Nero!';
+            statusText = 'Bianco ha abbandonato. Nero vince!';
         } else if (this.gameState === 'resigned_black') {
-            statusText = 'Nero si è arreso. Vince Bianco!';
-        } else if (this.gameState === 'draw_agreed') {
-            statusText = 'Patta concordata!';
+            statusText = 'Nero ha abbandonato. Bianco vince!';
         }
 
         this.gameStatusElement.textContent = statusText;
@@ -743,6 +795,90 @@ class ChessGame {
 
         this.moveListElement.scrollTop = this.moveListElement.scrollHeight;
     }
+
+    // START ADDED algebraicToCoords
+    algebraicToCoords(algebraic) {
+        if (!algebraic || algebraic.length < 2) {
+            console.error("Invalid algebraic notation:", algebraic);
+            return null;
+        }
+        const col = algebraic.charCodeAt(0) - 'a'.charCodeAt(0);
+        const row = 8 - parseInt(algebraic.substring(1), 10);
+        if (isNaN(row) || col < 0 || col > 7 || row < 0 || row > 7) {
+            console.error("Failed to parse algebraic notation:", algebraic, "to coords:", { row, col });
+            return null;
+        }
+        return { row, col };
+    }
+    // END ADDED algebraicToCoords
+
+    // START ADDED boardToFEN
+    boardToFEN() {
+        let fen = '';
+        // 1. Piece placement
+        for (let r = 0; r < 8; r++) {
+            let emptySquares = 0;
+            for (let c = 0; c < 8; c++) {
+                const piece = this.board[r][c];
+                if (piece) {
+                    if (emptySquares > 0) {
+                        fen += emptySquares;
+                        emptySquares = 0;
+                    }
+                    let char = piece.type[0]; // p, r, n, b, q, k
+                    if (piece.type === 'knight') char = 'n';
+                    fen += (piece.color === 'white') ? char.toUpperCase() : char.toLowerCase();
+                } else {
+                    emptySquares++;
+                }
+            }
+            if (emptySquares > 0) {
+                fen += emptySquares;
+            }
+            if (r < 7) {
+                fen += '/';
+            }
+        }
+
+        // 2. Active color
+        fen += this.currentPlayer === 'white' ? ' w' : ' b';
+
+        // 3. Castling availability
+        let castling = '';
+        if (!this.hasKingMoved.white) {
+            if (!this.hasRookMoved.white.kingside) castling += 'K';
+            if (!this.hasRookMoved.white.queenside) castling += 'Q';
+        }
+        if (!this.hasKingMoved.black) {
+            if (!this.hasRookMoved.black.kingside) castling += 'k';
+            if (!this.hasRookMoved.black.queenside) castling += 'q';
+        }
+        fen += castling === '' ? ' -' : ` ${castling}`;
+
+        // 4. En passant target square
+        if (this.enPassantTarget) {
+            const colChar = String.fromCharCode('a'.charCodeAt(0) + this.enPassantTarget.col);
+            // FEN expects rank from 1-8, board is 0-7.
+            // If white just moved pawn 2 squares, target is row 2 (rank 6 for black to capture on)
+            // If black just moved pawn 2 squares, target is row 5 (rank 3 for white to capture on)
+            const rank = this.enPassantTarget.color === 'white' ? 3 : 6; // This is the square the capturing pawn moves TO
+            fen += ` ${colChar}${rank}`;
+        } else {
+            fen += ' -';
+        }
+
+        // 5. Halfmove clock (number of halfmoves since last capture or pawn advance)
+        // For simplicity, we'll use 0. Stockfish can usually work with this.
+        // A more accurate implementation would require tracking this in game logic.
+        fen += ' 0';
+
+        // 6. Fullmove number (starts at 1, incremented after Black's move)
+        const fullmoveNumber = Math.floor(this.moveHistory.length / 2) + 1;
+        fen += ` ${fullmoveNumber}`;
+
+        return fen;
+    }
+    // END ADDED boardToFEN
 
     getMoveNotation(move) {
         const { piece, to, capturedPiece, castling, promotion, promotedTo } = move;
@@ -844,10 +980,14 @@ class ChessGame {
 
     resignGame() {
         if (this.gameState === 'playing' || this.gameState === 'check') {
-            this.gameState = this.currentPlayer === 'white' ? 'resigned_white' : 'resigned_black';
-            this.updateGameInfo();
+            const resigningPlayer = this.currentPlayer;
+            this.gameState = resigningPlayer === 'white' ? 'resigned_white' : 'resigned_black';
+            const winner = resigningPlayer === 'white' ? 'Nero' : 'Bianco';
+            this.updateGameInfo(); // Update status text first
+            this.showCheckmateModal(`${resigningPlayer} ha abbandonato. ${winner} vince!`); // Re-use modal
             this.disableBoardInteraction();
-            alert(`${this.currentPlayer} has resigned. The opponent wins!`);
+            this.resignBtn.disabled = true;
+            this.offerDrawBtn.disabled = true;
         }
     }
 
@@ -857,20 +997,37 @@ class ChessGame {
             // For PVC, AI might accept/reject. For PvP, other player would respond.
             // Here, we'll just log it and for PVC, AI will ignore it for now.
             if (this.gameMode === 'pvc') {
-                alert("You offered a draw. The AI is not programmed to respond to draw offers yet.");
-                // Future: Implement AI logic for draw offers
+                // For now, AI doesn't respond to draw offers.
+                this.gameStatusElement.textContent = 'Proposta di patta inviata. L\'AI sta riflettendo...';
+                console.log('Draw offered to AI. AI currently ignores it.');
             } else {
                 // For PvP, this would require communication with the other player.
-                // Simulate immediate agreement for simplicity in this version.
-                if (confirm("Offer a draw? If the opponent accepts, the game is a draw.")) {
+                // We can simulate an immediate acceptance for simplicity or a modal for the other player.
+                const opponent = this.currentPlayer === 'white' ? 'Nero' : 'Bianco';
+                if (confirm(`${this.currentPlayer} propone la patta. ${opponent}, accetti?`)) {
                     this.gameState = 'draw_agreed';
-                    this.updateGameInfo();
+                    this.showCheckmateModal('Patta concordata!');
                     this.disableBoardInteraction();
-                    alert("Draw agreed!");
+                    this.resignBtn.disabled = true;
+                    this.offerDrawBtn.disabled = true;
                 } else {
-                    alert("Draw offer declined or cancelled.");
+                    this.gameStatusElement.textContent = 'Proposta di patta rifiutata.';
                 }
             }
+            this.updateGameInfo();
+        }
+    }
+
+    showCheckmateModal(message) {
+        if (this.checkmateModal && this.checkmateMessageElement) {
+            this.checkmateMessageElement.textContent = message;
+            this.checkmateModal.style.display = 'flex';
+        }
+    }
+
+    hideCheckmateModal() {
+        if (this.checkmateModal) {
+            this.checkmateModal.style.display = 'none';
         }
     }
 
@@ -928,19 +1085,24 @@ class ChessGame {
         this.gameMode = mode;
         console.log(`Game mode changed to: ${mode}`);
 
-        // Show/hide AI difficulty based on game mode
-        if (this.aiDifficultySetting) { // Target the wrapper div
+        if (this.aiDifficultySetting) {
             this.aiDifficultySetting.style.display = mode === 'pvc' ? 'block' : 'none';
         }
-
-        // Reset the game for the new mode AFTER updating UI elements
+        if (this.aiAssistContainer) { // Show/hide AI assist checkbox based on game mode
+            this.aiAssistContainer.style.display = mode === 'pvc' ? 'flex' : 'none';
+            if (mode !== 'pvc' && this.showAIAssistCheckbox) {
+                this.showAIAssistCheckbox.checked = false; // Uncheck if switching from PVC
+                this.showAIAssist = false;
+                this.removeThinkingArrow();
+            }
+        }
         this.newGame();
     }
 
     setupStockfish() {
         this.stockfish.onmessage = (event) => {
             const message = event.data;
-            // console.log('Stockfish:', message); // For debugging
+            // console.log('Stockfish:', message); 
 
             if (this.analysisPanelVisible) {
                 this.currentAnalysis += message + '\n';
@@ -949,13 +1111,20 @@ class ChessGame {
             }
 
             if (message.startsWith('bestmove')) {
-                // Ensure AI turn flag is appropriately managed before and after this
                 const move = message.split(' ')[1];
-                if (this.isAITurn) { // Double check it is AI's turn to make a move
+                this.removeThinkingArrow(); // Remove thinking arrow before making the move
+                if (this.isAITurn) {
                     this.handleAIMove(move);
                 }
-                // Stop analysis after AI makes its move if it was running for the move itself
-                // this.stockfish.postMessage('stop'); 
+            } else if (message.startsWith('info')) {
+                if (this.showAIAssist && this.isAITurn) {
+                    const parts = message.split(' ');
+                    const pvIndex = parts.indexOf('pv');
+                    if (pvIndex !== -1 && parts.length > pvIndex + 1) {
+                        const contemplatedMoveAlg = parts[pvIndex + 1];
+                        this.drawThinkingArrow(contemplatedMoveAlg);
+                    }
+                }
             }
         };
         this.stockfish.postMessage('uci');
@@ -964,18 +1133,17 @@ class ChessGame {
     }
 
     requestAIMove() {
-        if (!this.isAITurn || this.gameState !== 'playing') return;
+        if (!this.isAITurn || (this.gameState !== 'playing' && this.gameState !== 'check')) return; // Added check for gameState
 
         const fen = this.boardToFEN();
         this.stockfish.postMessage(`position fen ${fen}`);
-
-        // Adjust the depth based on game progress or set difficulty
-        const depth = this.aiDifficulty; // You can customize this logic
+        const depth = this.aiDifficulty;
         this.stockfish.postMessage(`go depth ${depth}`);
     }
 
     handleAIMove(algebraicMove) {
-        if (!this.isAITurn) return; // Should not happen if logic is correct
+        this.removeThinkingArrow(); // Ensure arrow is removed
+        if (!this.isAITurn) return;
 
         console.log(`AI proposes move: ${algebraicMove}`);
         const fromAlg = algebraicMove.substring(0, 2);
@@ -1086,81 +1254,68 @@ class ChessGame {
         }
     }
 
-    algebraicToCoords(alg) {
-        const col = alg.charCodeAt(0) - 97;
-        const row = 8 - parseInt(alg.charAt(1), 10);
-        return this.isInBounds(row, col) ? { row, col } : null;
+    // Helper function to draw the AI's contemplated move arrow
+    drawThinkingArrow(algebraicMove) {
+        this.removeThinkingArrow(); // Remove any existing arrow first
+
+        if (!algebraicMove || algebraicMove.length < 4) return;
+
+        const fromAlg = algebraicMove.substring(0, 2);
+        const toAlg = algebraicMove.substring(2, 4);
+
+        const from = this.algebraicToCoords(fromAlg);
+        const to = this.algebraicToCoords(toAlg);
+
+        if (!from || !to) return;
+
+        const fromSquareElement = document.querySelector(`[data-row="${from.row}"][data-col="${from.col}"]`);
+        const toSquareElement = document.querySelector(`[data-row="${to.row}"][data-col="${to.col}"]`);
+
+        if (!fromSquareElement || !toSquareElement) return;
+
+        // Get board element positioning info
+        const boardStyle = window.getComputedStyle(this.boardElement);
+        const squareSize = 60; // Match the CSS square size (60px)
+        const boardPadding = parseInt(boardStyle.padding) || 8; // Board padding from CSS
+
+        // Calculate positions relative to the board's content area (excluding padding)
+        const x1 = from.col * squareSize + squareSize / 2;
+        const y1 = from.row * squareSize + squareSize / 2;
+        const x2 = to.col * squareSize + squareSize / 2;
+        const y2 = to.row * squareSize + squareSize / 2;
+
+        // Create SVG for the arrow
+        const svgNS = "http://www.w3.org/2000/svg";
+        this.thinkingArrowSVG = document.createElementNS(svgNS, "svg");
+        this.thinkingArrowSVG.classList.add('arrow-thinking');
+        this.thinkingArrowSVG.style.position = 'absolute';
+        this.thinkingArrowSVG.style.left = boardPadding + 'px';
+        this.thinkingArrowSVG.style.top = boardPadding + 'px';
+        this.thinkingArrowSVG.style.width = (squareSize * 8) + 'px';
+        this.thinkingArrowSVG.style.height = (squareSize * 8) + 'px';
+        this.thinkingArrowSVG.style.pointerEvents = 'none';
+        this.thinkingArrowSVG.style.zIndex = '10';
+
+        const line = document.createElementNS(svgNS, "line");
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', 'rgba(255, 165, 0, 0.8)');
+        line.setAttribute('stroke-width', '3');
+        line.setAttribute('stroke-dasharray', '5,5');
+        line.setAttribute('marker-end', 'url(#arrowhead-thinking)');
+
+        this.thinkingArrowSVG.appendChild(line);
+        this.boardElement.appendChild(this.thinkingArrowSVG);
     }
 
-    boardToFEN() {
-        let fen = '';
-        for (let r = 0; r < 8; r++) {
-            let emptySquares = 0;
-            for (let c = 0; c < 8; c++) {
-                const piece = this.board[r][c];
-                if (piece) {
-                    if (emptySquares > 0) {
-                        fen += emptySquares;
-                        emptySquares = 0;
-                    }
-                    let fenChar = piece.type.toLowerCase();
-                    if (piece.color === 'white') {
-                        fenChar = fenChar.toUpperCase();
-                    }
-                    // Stockfish.js uses p, n, b, r, q, k
-                    if (fenChar === 'N' && piece.type === 'knight') fenChar = 'N';
-                    else if (fenChar === 'n' && piece.type === 'knight') fenChar = 'n';
-                    else fenChar = piece.type.charAt(0);
-
-                    if (piece.color === 'white') {
-                        fen += fenChar.toUpperCase();
-                    } else {
-                        fen += fenChar.toLowerCase();
-                    }
-
-                } else {
-                    emptySquares++;
-                }
-            }
-            if (emptySquares > 0) {
-                fen += emptySquares;
-            }
-            if (r < 7) {
-                fen += '/';
-            }
+    // Helper function to remove the AI's contemplated move arrow
+    removeThinkingArrow() {
+        if (this.thinkingArrowSVG && this.thinkingArrowSVG.parentNode) {
+            this.thinkingArrowSVG.parentNode.removeChild(this.thinkingArrowSVG);
+            this.thinkingArrowSVG = null;
         }
-
-        // Active color
-        fen += this.currentPlayer === 'white' ? ' w' : ' b';
-
-        // Castling availability
-        let castling = '';
-        if (!this.hasKingMoved.white) {
-            if (!this.hasRookMoved.white.kingside) castling += 'K';
-            if (!this.hasRookMoved.white.queenside) castling += 'Q';
-        }
-        if (!this.hasKingMoved.black) {
-            if (!this.hasRookMoved.black.kingside) castling += 'k';
-            if (!this.hasRookMoved.black.queenside) castling += 'q';
-        }
-        fen += castling.length > 0 ? ` ${castling}` : ' -';
-
-        // En passant target square
-        if (this.enPassantTarget) {
-            const col = String.fromCharCode(97 + this.enPassantTarget.col);
-            const row = 8 - this.enPassantTarget.row;
-            fen += ` ${col}${row}`;
-        } else {
-            fen += ' -';
-        }
-
-        // Halfmove clock (simplified, not strictly necessary for basic Stockfish interaction)
-        fen += ' 0';
-
-        // Fullmove number (simplified)
-        fen += ` ${Math.floor(this.moveHistory.length / 2) + 1}`;
-
-        return fen;
     }
 }
 
