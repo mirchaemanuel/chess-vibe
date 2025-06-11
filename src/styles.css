@@ -37,12 +37,20 @@ h1 {
 }
 
 .turn-indicator,
-.game-status {
+.game-status,
+.opening-info {
     background: rgba(255, 255, 255, 0.9);
     padding: 10px 20px;
     border-radius: 20px;
     font-weight: bold;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.opening-info {
+    background: rgba(255, 235, 59, 0.9);
+    color: #333;
+    font-style: italic;
+    font-size: 0.9em;
 }
 
 .game-board-container {

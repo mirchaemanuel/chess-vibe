@@ -28,6 +28,9 @@ class ChessGame {
         this.showAIAssist = false; // Added
         this.thinkingArrowSVG = null; // Added to store the thinking arrow SVG element
 
+        // Initialize opening book
+        this.openingBook = new OpeningBook();
+
         this.initializeDOM();
         this.renderBoard();
         this.updateGameInfo();
@@ -57,6 +60,7 @@ class ChessGame {
         this.boardElement = document.getElementById('chessBoard');
         this.currentPlayerElement = document.getElementById('currentPlayer');
         this.gameStatusElement = document.getElementById('gameStatus');
+        this.currentOpeningElement = document.getElementById('currentOpening');
         this.moveListElement = document.getElementById('moveList');
         this.whiteCapturedElement = document.getElementById('whiteCaptured');
         this.blackCapturedElement = document.getElementById('blackCaptured');
@@ -487,6 +491,7 @@ class ChessGame {
         this.renderBoard();
         this.switchPlayer();
         this.updateGameInfo();
+        this.updateOpeningInfo(); // Update opening information after move
         this.updateMoveHistory();
         this.updateCapturedPieces();
         this.checkGameEnd();
@@ -521,6 +526,7 @@ class ChessGame {
             this.renderBoard();
             this.switchPlayer(); // Player was switched before promotion modal for player, switch again for AI
             this.updateGameInfo();
+            this.updateOpeningInfo(); // Update opening info after promotion
             this.updateMoveHistory(); // Update with promoted piece
             this.updateCapturedPieces();
             this.checkGameEnd();
@@ -535,6 +541,7 @@ class ChessGame {
             // Just need to ensure game state is consistent.
             this.renderBoard(); // Re-render to show promoted piece from AI
             this.updateGameInfo();
+            this.updateOpeningInfo(); // Update opening info after AI promotion
             this.updateMoveHistory();
             this.checkGameEnd();
         }
@@ -573,6 +580,7 @@ class ChessGame {
 
         this.renderBoard();
         this.updateGameInfo();
+        this.updateOpeningInfo(); // Update opening info after undo
         this.updateMoveHistory(previousState.moveHistoryLength);
         this.updateCapturedPieces();
         this.clearSelection();
@@ -774,6 +782,24 @@ class ChessGame {
         this.gameStatusElement.textContent = statusText;
     }
 
+    updateOpeningInfo() {
+        const currentFen = this.boardToFEN();
+        this.openingBook.getOpeningMoves(currentFen); // This updates the current opening info
+        const openingName = this.openingBook.getCurrentOpeningName();
+        const ecoCode = this.openingBook.getCurrentOpeningECO();
+
+        let displayText = openingName;
+        if (ecoCode) {
+            displayText += ` (${ecoCode})`;
+        }
+
+        console.log(`Opening info updated: ${displayText}`); // Debug log
+
+        if (this.currentOpeningElement) {
+            this.currentOpeningElement.textContent = displayText;
+        }
+    }
+
     updateMoveHistory() {
         this.moveListElement.innerHTML = '';
         this.moveHistory.forEach((move, index) => {
@@ -950,10 +976,13 @@ class ChessGame {
             black: { kingside: false, queenside: false }
         };
         this.enPassantTarget = null;
-        // this.isAITurn = false; // Reset isAITurn status
+
+        // Reset opening book
+        this.openingBook.reset();
 
         this.renderBoard();
         this.updateGameInfo();
+        this.updateOpeningInfo(); // Initialize opening info for new game
         this.updateMoveHistory();
         this.updateCapturedPieces();
         this.clearSelection();
@@ -1133,12 +1162,35 @@ class ChessGame {
     }
 
     requestAIMove() {
-        if (!this.isAITurn || (this.gameState !== 'playing' && this.gameState !== 'check')) return; // Added check for gameState
+        if (!this.isAITurn || (this.gameState !== 'playing' && this.gameState !== 'check')) return;
 
         const fen = this.boardToFEN();
-        this.stockfish.postMessage(`position fen ${fen}`);
-        const depth = this.aiDifficulty;
-        this.stockfish.postMessage(`go depth ${depth}`);
+        console.log('AI requesting move for FEN:', fen);
+
+        // Debug: Check opening book
+        this.openingBook.debugPosition(fen);
+
+        // First, check if we're still in the opening book
+        const openingMove = this.openingBook.getRandomOpeningMove(fen);
+
+        if (openingMove) {
+            // We're still in opening book, use the opening move
+            console.log(`AI using opening book move: ${openingMove}`);
+            this.gameStatusElement.textContent = 'AI playing from opening book...';
+            this.updateOpeningInfo(); // Update opening display
+
+            // Add a small delay to simulate thinking, then make the move
+            setTimeout(() => {
+                this.handleAIMove(openingMove);
+            }, 500);
+        } else {
+            // We're out of opening book, use Stockfish
+            console.log('AI out of opening book, using Stockfish');
+            this.gameStatusElement.textContent = 'AI is thinking...';
+            this.stockfish.postMessage(`position fen ${fen}`);
+            const depth = this.aiDifficulty;
+            this.stockfish.postMessage(`go depth ${depth}`);
+        }
     }
 
     handleAIMove(algebraicMove) {
@@ -1243,6 +1295,7 @@ class ChessGame {
         this.switchPlayer(); // Switch back to player
         this.renderBoard();
         this.updateGameInfo();
+        this.updateOpeningInfo(); // Update opening information after AI move
         this.updateMoveHistory();
         this.updateCapturedPieces();
         this.checkGameEnd();
